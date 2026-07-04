@@ -13,6 +13,9 @@ is emitted as a chunk and the buffer fully cleared (the original overwrites
 segments from the last turn and leaves stale buffer state), so that the
 concatenation of all chunks always equals the full message stream.
 
+Also provides the shared runner (build_arg_parser / run_dataset) used by
+experiments/longmemeval/chunk_longmemeval.py.
+
 Usage (Seraph):
   python chunk_locomo.py \
       --data ../../dataset/locomo10.json \
@@ -20,7 +23,6 @@ Usage (Seraph):
       --embedder /data/delta9043/models/all-MiniLM-L6-v2
 """
 import argparse
-import copy
 import json
 import os
 import time
@@ -201,9 +203,8 @@ def build_models(args):
 
 # ============ Per-sample chunking ============
 
-def build_compressed_stream(sample, compressor, tokenizer):
+def build_compressed_stream(sessions, timestamps, compressor, tokenizer):
     """Compress the whole conversation once; returns list of turn pairs."""
-    sessions, timestamps, _, _ = extract_locomo_sessions(sample['conversation'])
     stream = []
     for s_idx, (session, ts) in enumerate(zip(sessions, timestamps)):
         while session and session[0]["role"] != "user":
@@ -228,7 +229,7 @@ def verify_integrity(stream, chunks, mode, sample_id):
             f"expected {len(expected)} messages, got {len(got)} (or order/content mismatch)")
 
 
-def chunk_sample(sample, segmenter, embedder, stream):
+def chunk_sample(sample_id, segmenter, embedder, stream):
     results, diagnostics = {}, {}
     for mode in MODES:
         diag = []
@@ -242,43 +243,40 @@ def chunk_sample(sample, segmenter, embedder, stream):
             chunks.extend(mgr.cut_with_segmenter(segmenter, embedder, force_segment=True))
         chunks = [c for c in chunks if c]
 
-        verify_integrity(stream, chunks, mode, sample["sample_id"])
+        verify_integrity(stream, chunks, mode, sample_id)
         results[mode] = chunks
         diagnostics[mode] = diag
     return results, diagnostics
 
 
-# ============ Main ============
+# ============ Shared runner ============
 
-def main():
-    parser = argparse.ArgumentParser(description="LoCoMo chunking-only pipeline (3 boundary modes)")
-    parser.add_argument('--data', default='../../dataset/locomo10.json')
+def build_arg_parser(description, default_data):
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument('--data', default=default_data, required=default_data is None)
     parser.add_argument('--llmlingua', default='/data/delta9043/models/llmlingua-2')
     parser.add_argument('--embedder', default='/data/delta9043/models/all-MiniLM-L6-v2')
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--rate', type=float, default=0.6, help='llmlingua-2 compression rate')
     parser.add_argument('--output-dir', default='./chunk_results')
     parser.add_argument('--limit', type=int, default=None, help='process only first N samples')
-    args = parser.parse_args()
+    return parser
 
+
+def run_dataset(args, samples):
+    """samples: list of (sample_id, sessions, timestamps)."""
     os.makedirs(args.output_dir, exist_ok=True)
-    data = json.load(open(args.data, "r"))
-    if args.limit:
-        data = data[:args.limit]
-    print(f"Loaded {len(data)} samples from {args.data}")
-
     compressor, segmenter, embedder = build_models(args)
     print(f"Models ready (buffer_len={segmenter.buffer_len})")
 
     all_chunks = {mode: {} for mode in MODES}
     all_diag = {}
 
-    for sample in data:
-        sample_id = sample["sample_id"]
+    for sample_id, sessions, timestamps in samples:
         t0 = time.time()
-        stream = build_compressed_stream(sample, compressor, segmenter.tokenizer)
+        stream = build_compressed_stream(sessions, timestamps, compressor, segmenter.tokenizer)
         t1 = time.time()
-        results, diagnostics = chunk_sample(sample, segmenter, embedder, stream)
+        results, diagnostics = chunk_sample(sample_id, segmenter, embedder, stream)
         t2 = time.time()
 
         all_diag[sample_id] = diagnostics
@@ -311,6 +309,25 @@ def main():
         turns = [c["num_turns"] for v in all_chunks[mode].values() for c in v]
         avg = sum(turns) / len(turns) if turns else 0
         print(f"{mode:>9}: {n_chunks} chunks, avg {avg:.1f} turns/chunk")
+
+
+# ============ Main (LoCoMo) ============
+
+def main():
+    args = build_arg_parser("LoCoMo chunking-only pipeline (3 boundary modes)",
+                            default_data='../../dataset/locomo10.json').parse_args()
+
+    data = json.load(open(args.data, "r"))
+    if args.limit:
+        data = data[:args.limit]
+    print(f"Loaded {len(data)} samples from {args.data}")
+
+    samples = []
+    for sample in data:
+        sessions, timestamps, _, _ = extract_locomo_sessions(sample['conversation'])
+        samples.append((sample['sample_id'], sessions, timestamps))
+
+    run_dataset(args, samples)
 
 
 if __name__ == "__main__":

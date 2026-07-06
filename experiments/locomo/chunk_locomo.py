@@ -94,6 +94,17 @@ class ChunkOnlyBufferManager(SenMemBufferManager):
         self.mode = mode
         self.diagnostics = diagnostics
 
+    def _coarse_boundaries(self, segmenter):
+        # replicates segmenter.propose_cut but also returns the adjacent-attention
+        # values it peaks over: outer[i-1] = M[i, i-1] (turn i -> turn i-1)
+        buffer_texts = [m["content"] for m in self.buffer if m["role"] == "user"]
+        if not buffer_texts:
+            return [], []
+        M = segmenter.sentence_level_attention(buffer_texts)
+        outer = [float(M[i, i - 1]) for i in range(1, len(buffer_texts))]
+        boundaries = [k for k in range(1, len(outer) - 1) if outer[k - 1] < outer[k] > outer[k + 1]]
+        return boundaries, outer
+
     def _fine_boundaries(self, text_embedder):
         # identical to original: turn = user + " " + assistant, threshold 0.2 -> 0.5
         turns = []
@@ -122,9 +133,14 @@ class ChunkOnlyBufferManager(SenMemBufferManager):
 
         coarse = None
         if self.mode in ("attention", "combined"):
-            buffer_texts = [m["content"] for m in self.buffer if m["role"] == "user"]
-            coarse = segmenter.propose_cut(buffer_texts)
+            coarse, outer = self._coarse_boundaries(segmenter)
             record["coarse"] = list(coarse)
+            record["attn_to_prev"] = [round(v, 6) for v in outer]
+            # annotate each user message with its attention to the previous turn
+            # (window-relative; first turn of a window has no previous turn)
+            self.buffer[0].pop("attn_to_prev", None)  # may carry a stale value from the previous window
+            for i in range(1, len(self.buffer) // 2):
+                self.buffer[2 * i]["attn_to_prev"] = round(outer[i - 1], 6)
 
         if self.mode == "attention":
             final = sorted(set(coarse))

@@ -20,7 +20,7 @@ conda activate lightmem
 
 # ============ 설정 ============
 REPO=/data/delta9043/repos/LightMem
-DATA=/data/delta9043/datasets/longmemeval/longmemeval_s.json  # TODO: 실제 경로 확인
+DATA=/data/delta9043/datasets/longmemeval/longmemeval_s_cleaned.json
 LLMLINGUA=/data/delta9043/models/llmlingua-2
 EMBEDDER=/data/delta9043/models/all-MiniLM-L6-v2
 OUTPUT_DIR=${REPO}/results/chunk_longmemeval

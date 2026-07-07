@@ -7,6 +7,9 @@
 /my_long_term_chat
 /results
 
+# local chunking analysis outputs (too large for GitHub)
+/boundary_results
+
 # C extensions
 *.so
 

@@ -8,10 +8,14 @@ three boundary modes:
   - combined:  original LightMem logic (cosine boundaries within +-3 of an
                attention boundary; falls back to all cosine boundaries)
 
-Deviation from the original: on the final force_segment flush the remainder
-is emitted as a chunk and the buffer fully cleared (the original overwrites
-segments from the last turn and leaves stale buffer state), so that the
-concatenation of all chunks always equals the full message stream.
+Deviations from the original repo code:
+- final force_segment flush emits the remainder as a chunk and fully clears
+  the buffer (the original overwrites segments from the last turn and leaves
+  stale buffer state), so that the concatenation of all chunks always equals
+  the full message stream.
+- attention boundaries follow the paper (App. C.1): the cut is placed
+  immediately before the peak turn. propose_cut in the repo returns the
+  outer-array index k directly, cutting one turn earlier than the paper.
 
 Also provides the shared runner (build_arg_parser / run_dataset) used by
 experiments/longmemeval/chunk_longmemeval.py.
@@ -95,14 +99,17 @@ class ChunkOnlyBufferManager(SenMemBufferManager):
         self.diagnostics = diagnostics
 
     def _coarse_boundaries(self, segmenter):
-        # replicates segmenter.propose_cut but also returns the adjacent-attention
-        # values it peaks over: outer[i-1] = M[i, i-1] (turn i -> turn i-1)
+        # like segmenter.propose_cut but also returns the adjacent-attention
+        # values it peaks over: outer[i-1] = M[i, i-1] (turn i -> turn i-1).
+        # Boundary index is k+1, not k as in propose_cut: the paper (App. C.1)
+        # puts the cut immediately before the peak turn, i.e. turn k+1 since
+        # outer[k] is turn k+1's attention to turn k.
         buffer_texts = [m["content"] for m in self.buffer if m["role"] == "user"]
         if not buffer_texts:
             return [], []
         M = segmenter.sentence_level_attention(buffer_texts)
         outer = [float(M[i, i - 1]) for i in range(1, len(buffer_texts))]
-        boundaries = [k for k in range(1, len(outer) - 1) if outer[k - 1] < outer[k] > outer[k + 1]]
+        boundaries = [k + 1 for k in range(1, len(outer) - 1) if outer[k - 1] < outer[k] > outer[k + 1]]
         return boundaries, outer
 
     def _fine_boundaries(self, text_embedder):
